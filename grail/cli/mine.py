@@ -256,6 +256,7 @@ async def maybe_log_debug_sample(
     sample: Any,
     window_start: int,
     base_nonce: int,
+    rollouts_per_problem: int,
     monitor: Any | None,
     text_logs_emitted: int,
     text_log_limit: int,
@@ -285,7 +286,10 @@ async def maybe_log_debug_sample(
         prompt_len = int(getattr(sample, "prompt_length", 0) or 0)
         completion_len = int(getattr(sample, "completion_length", 0) or 0)
         sample_text = tokenizer.decode(sample.tokens, skip_special_tokens=False)
-        sample_nonce = base_nonce * 10
+        # Nonce must be unique across the entire window file.
+        # Use the same stride as the rollout packaging logic.
+        stride = max(1, int(rollouts_per_problem))
+        sample_nonce = base_nonce * stride
         logger.debug(
             (
                 "TEXT[mine] window=%s group=%s nonce=%s reward=%.3f "
@@ -431,7 +435,12 @@ def package_rollout_data(
     Returns:
         Signed dictionary ready to upload for validation
     """
-    rollout_nonce = base_nonce * 10 + rollout_idx
+    # IMPORTANT: nonce must be unique within a miner's window submission.
+    # The previous `base_nonce * 10 + rollout_idx` collides whenever
+    # rollouts_per_group > 10 (default is 16), e.g. (group=4,idx=0)=40 and
+    # (group=3,idx=10)=40. Use a stride of the actual group size.
+    stride = max(1, int(total_in_group))
+    rollout_nonce = base_nonce * stride + rollout_idx
 
     # Sign commit binding (tokens, randomness, model, layer, commitments)
     from ..protocol.signatures import sign_commit_binding
@@ -683,6 +692,7 @@ async def generate_rollouts_for_window(
                     grpo_rollouts[0],
                     window_start,
                     base_nonce,
+                    rollouts_per_problem,
                     monitor,
                     text_logs_emitted,
                     DEBUG_TEXT_LOG_LIMIT_PER_WINDOW,
